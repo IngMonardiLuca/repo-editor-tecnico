@@ -1,0 +1,23 @@
+# Ambiente virtuale (pesante, ricreabile da requirements.txt)
+.venv/
+
+# Dati di lavoro (relazioni dei clienti, non codice)
+WORKSPACE EDITOR TECNICO/
+
+# Cache e bytecode Python
+__pycache__/
+*.py[cod]
+
+# Build di PyInstaller (per il futuro)
+build/
+dist/
+*.spec
+
+# Configurazione/IDE
+.vscode/
+.idea/
+
+# File di sistema
+Thumbs.db
+Desktop.ini
+.DS_Store
