@@ -5109,8 +5109,8 @@ class MainWindow(QMainWindow):
         dialog.exec()
 
     def show_node_preview(self):
-        # Anteprima a schermo (sola lettura) del nodo selezionato: lavora su una
-        # copia dei blocchi e non scrive nulla nel progetto.
+        # Anteprima a schermo del nodo selezionato e dei suoi discendenti: il
+        # contenuto è renderizzato da copie; l'unica scrittura è la scala immagini.
         self.save_current_item_content()
         self.update_figure_references()
         self.update_equation_references()
@@ -5123,9 +5123,14 @@ class MainWindow(QMainWindow):
             )
             return
 
-        blocks = self.ensure_blocks_defaults_list(
-            deepcopy(self.current_item.data(0, CONTENT_ROLE) or [])
-        )
+        nodes = []
+
+        def collect_subtree(item):
+            nodes.append(item)
+            for i in range(item.childCount()):
+                collect_subtree(item.child(i))
+
+        collect_subtree(self.current_item)
 
         dialog = QDialog(self)
         dialog.setWindowTitle("Anteprima pagina")
@@ -5152,21 +5157,34 @@ class MainWindow(QMainWindow):
         page_layout.setContentsMargins(60, 60, 60, 60)
         page_layout.setSpacing(18)
 
-        # La scala si applica dal vivo e viene persistita subito nei widget del nodo.
-        def persist_scale(img_id, value):
+        # La scala si applica dal vivo e viene persistita subito: per il nodo
+        # selezionato si aggiornano i widget (fonte di verità), per gli altri
+        # nodi si scrive direttamente nel loro CONTENT_ROLE.
+        def persist_scale(node_item, img_id, value):
             value = int(value)
-            for widget in self.block_editor.iter_widgets():
-                if isinstance(widget, ImageBlockWidget):
-                    if widget.data.get("id") == img_id:
-                        widget.data["scale_percent"] = value
-                elif isinstance(widget, MultiImageBlockWidget):
-                    for img in widget.images:
-                        if img.get("id") == img_id:
-                            img["scale_percent"] = value
+            if node_item is self.current_item:
+                for widget in self.block_editor.iter_widgets():
+                    if isinstance(widget, ImageBlockWidget):
+                        if widget.data.get("id") == img_id:
+                            widget.data["scale_percent"] = value
+                    elif isinstance(widget, MultiImageBlockWidget):
+                        for img in widget.images:
+                            if img.get("id") == img_id:
+                                img["scale_percent"] = value
+                self.save_current_item_content()
+            else:
+                node_blocks = node_item.data(0, CONTENT_ROLE) or []
+                for b in node_blocks:
+                    if b.get("type") == "image" and b.get("id") == img_id:
+                        b["scale_percent"] = value
+                    elif b.get("type") == "images":
+                        for img in b.get("images", []):
+                            if img.get("id") == img_id:
+                                img["scale_percent"] = value
+                node_item.setData(0, CONTENT_ROLE, node_blocks)
             self.mark_dirty()
-            self.save_current_item_content()
 
-        def add_image_to_page(image_path, scale_percent, caption_text, img_id=None):
+        def add_image_to_page(image_path, scale_percent, caption_text, img_id=None, node_item=None):
             resolved = self.resolve_runtime_path(image_path or "")
             scale_percent = int(scale_percent or 100)
             apply_fn = None
@@ -5211,9 +5229,9 @@ class MainWindow(QMainWindow):
                 scale_spin.setFixedWidth(80)
                 scale_spin.setKeyboardTracking(False)
 
-                def on_scale_changed(value, bid=img_id, fn=apply_fn):
+                def on_scale_changed(value, bid=img_id, fn=apply_fn, node=node_item):
                     fn(value)
-                    persist_scale(bid, value)
+                    persist_scale(node, bid, value)
 
                 scale_spin.valueChanged.connect(on_scale_changed)
                 scale_row.addWidget(scale_spin)
@@ -5232,7 +5250,7 @@ class MainWindow(QMainWindow):
 
             return caption
 
-        for block in blocks:
+        def render_block(block, node_item):
             btype = block.get("type")
 
             if btype == "text":
@@ -5262,7 +5280,7 @@ class MainWindow(QMainWindow):
 
             elif btype == "image":
                 caption_text = build_image_caption(block.get("id"), block.get("caption", ""))
-                add_image_to_page(block.get("path", ""), block.get("scale_percent", 100), caption_text, block.get("id"))
+                add_image_to_page(block.get("path", ""), block.get("scale_percent", 100), caption_text, block.get("id"), node_item)
 
             elif btype == "images":
                 title = (block.get("title", "") or "").strip()
@@ -5273,7 +5291,7 @@ class MainWindow(QMainWindow):
 
                 for img in self.ensure_group_images_defaults(block.get("images", [])):
                     caption_text = build_image_caption(img.get("id"), img.get("caption", ""))
-                    add_image_to_page(img.get("path", ""), img.get("scale_percent", 100), caption_text, img.get("id"))
+                    add_image_to_page(img.get("path", ""), img.get("scale_percent", 100), caption_text, img.get("id"), node_item)
 
             elif btype == "equation":
                 latex = block.get("latex", "")
@@ -5370,6 +5388,20 @@ class MainWindow(QMainWindow):
 
                     table.resizeRowsToContents()
                     page_layout.addWidget(table)
+
+        for node_item in nodes:
+            title = node_item.text(0)
+            if title:
+                heading = QLabel(title)
+                heading.setWordWrap(True)
+                heading.setStyleSheet("QLabel { font-weight: bold; color: black; font-size: 12pt; }")
+                page_layout.addWidget(heading)
+
+            node_blocks = self.ensure_blocks_defaults_list(
+                deepcopy(node_item.data(0, CONTENT_ROLE) or [])
+            )
+            for block in node_blocks:
+                render_block(block, node_item)
 
         container_layout.addWidget(page)
         scroll.setWidget(container)
