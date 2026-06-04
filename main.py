@@ -8769,32 +8769,65 @@ class MainWindow(QMainWindow):
         self.update_figure_references()
         self.update_equation_references()
 
-        fmt, ok = QInputDialog.getItem(self, "Esporta documento", "Formato:", ["Word (.docx)", "PDF (.pdf)"], 0, False)
-        if not ok:
+        start = os.path.join(self.project_dir or "", "documento")
+        file_path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Esporta documento (Word + PDF)",
+            start,
+            "Documento Word e PDF (*.docx *.pdf)"
+        )
+        if not file_path:
             return
 
-        if fmt.startswith("Word"):
-            start = os.path.join(self.project_dir or "", "documento.docx")
-            file_path, _ = QFileDialog.getSaveFileName(self, "Esporta in Word", start, "Word (*.docx)")
-            if not file_path:
-                return
+        # Dal nome scelto ricavo il nome base: genero .docx e .pdf con lo stesso
+        # nome nella stessa cartella.
+        base, _ = os.path.splitext(file_path)
+        docx_path = base + ".docx"
+        pdf_path = base + ".pdf"
+
+        errors = []
+
+        try:
+            self.export_to_docx(docx_path)
+        except Exception as exc:
+            errors.append(("Word", f"{exc}\n\n{traceback.format_exc()}"))
+
+        try:
+            self.export_to_pdf(pdf_path)
+        except Exception as exc:
+            errors.append(("PDF", f"{exc}\n\n{traceback.format_exc()}"))
+
+        for fmt_name, detail in errors:
+            QMessageBox.critical(self, f"Errore export {fmt_name}", detail)
+
+        if len(errors) == 2:
+            self.statusBar().showMessage("Esportazione fallita", 3000)
+            return
+
+        failed = {fmt_name for fmt_name, _ in errors}
+        generated = []
+        if "Word" not in failed:
+            generated.append(docx_path)
+        if "PDF" not in failed:
+            generated.append(pdf_path)
+
+        self.statusBar().showMessage("Esportazione completata", 3000)
+
+        folder = os.path.dirname(os.path.abspath(base))
+
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Information)
+        box.setWindowTitle("Esportazione completata")
+        box.setText("File generati:\n\n" + "\n".join(generated))
+        open_btn = box.addButton("Apri cartella", QMessageBox.AcceptRole)
+        box.addButton("Chiudi", QMessageBox.RejectRole)
+        box.exec()
+
+        if box.clickedButton() is open_btn:
             try:
-                self.export_to_docx(file_path)
-                self.statusBar().showMessage("Esportazione Word completata", 3000)
-                QMessageBox.information(self, "Esportazione completata", "Il documento Word è stato generato correttamente.")
-            except Exception as exc:
-                QMessageBox.critical(self, "Errore export Word", f"{exc}\n\n{traceback.format_exc()}")
-        else:
-            start = os.path.join(self.project_dir or "", "documento.pdf")
-            file_path, _ = QFileDialog.getSaveFileName(self, "Esporta in PDF", start, "PDF (*.pdf)")
-            if not file_path:
-                return
-            try:
-                self.export_to_pdf(file_path)
-                self.statusBar().showMessage("Esportazione PDF completata", 3000)
-                QMessageBox.information(self, "Esportazione completata", "Il PDF è stato generato correttamente.")
-            except Exception as exc:
-                QMessageBox.critical(self, "Errore export PDF", f"{exc}\n\n{traceback.format_exc()}")
+                os.startfile(folder)
+            except Exception:
+                pass
 
     def iter_nodes_for_export(self):
         def visit(item, level):
