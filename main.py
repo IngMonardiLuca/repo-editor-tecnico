@@ -1047,7 +1047,7 @@ class ImageBlockWidget(BaseBlockWidget):
     block_type_label = "Immagine"
 
     def __init__(self, parent_editor, data=None):
-        base = {"type": "image", "path": "", "caption": "", "collapsed": False}
+        base = {"type": "image", "path": "", "caption": "", "scale_percent": 100, "collapsed": False}
         base.update(data or {})
         super().__init__(parent_editor, base)
         self.image_path = self.data.get("path", "")
@@ -1176,6 +1176,7 @@ class ImageBlockWidget(BaseBlockWidget):
 
     def export_data(self):
         data = {"type": "image", "path": self.image_path, "caption": self.data.get("caption", "")}
+        data["scale_percent"] = int(self.data.get("scale_percent", 100) or 100)
         data.update(self.export_common_data())
         return data
 
@@ -5151,29 +5152,44 @@ class MainWindow(QMainWindow):
         page_layout.setContentsMargins(60, 60, 60, 60)
         page_layout.setSpacing(18)
 
-        def add_image_to_page(image_path, scale_percent, caption_text):
+        # La scala si applica dal vivo e viene persistita subito nei widget del nodo.
+        def persist_scale(img_id, value):
+            value = int(value)
+            for widget in self.block_editor.iter_widgets():
+                if isinstance(widget, ImageBlockWidget):
+                    if widget.data.get("id") == img_id:
+                        widget.data["scale_percent"] = value
+                elif isinstance(widget, MultiImageBlockWidget):
+                    for img in widget.images:
+                        if img.get("id") == img_id:
+                            img["scale_percent"] = value
+            self.mark_dirty()
+            self.save_current_item_content()
+
+        def add_image_to_page(image_path, scale_percent, caption_text, img_id=None):
             resolved = self.resolve_runtime_path(image_path or "")
+            scale_percent = int(scale_percent or 100)
+            apply_fn = None
 
             if resolved and os.path.exists(resolved):
                 pix = QPixmap(resolved)
 
                 if not pix.isNull():
-                    scale_percent = int(scale_percent or 100)
-
-                    scaled_w = max(1, int(pix.width() * scale_percent / 100))
-                    scaled_h = max(1, int(pix.height() * scale_percent / 100))
-
-                    scaled_pix = pix.scaled(
-                        scaled_w,
-                        scaled_h,
-                        Qt.KeepAspectRatio,
-                        Qt.SmoothTransformation
-                    )
-
                     img_lbl = QLabel()
                     img_lbl.setAlignment(Qt.AlignCenter)
-                    img_lbl.setPixmap(scaled_pix)
 
+                    def apply_fn(value, lbl=img_lbl, base=pix):
+                        value = int(value or 100)
+                        scaled_w = max(1, int(base.width() * value / 100))
+                        scaled_h = max(1, int(base.height() * value / 100))
+                        lbl.setPixmap(base.scaled(
+                            scaled_w,
+                            scaled_h,
+                            Qt.KeepAspectRatio,
+                            Qt.SmoothTransformation
+                        ))
+
+                    apply_fn(scale_percent)
                     page_layout.addWidget(img_lbl)
 
             if caption_text:
@@ -5182,6 +5198,27 @@ class MainWindow(QMainWindow):
                 caption_lbl.setWordWrap(True)
                 caption_lbl.setStyleSheet("QLabel { font-style: italic; font-size: 9pt; color: black; }")
                 page_layout.addWidget(caption_lbl)
+
+            if apply_fn is not None and img_id is not None:
+                scale_row = QHBoxLayout()
+                scale_row.addStretch()
+                scale_row.addWidget(QLabel("% scala stampa"))
+
+                scale_spin = QSpinBox()
+                scale_spin.setRange(10, 200)
+                scale_spin.setSingleStep(5)
+                scale_spin.setValue(scale_percent)
+                scale_spin.setFixedWidth(80)
+                scale_spin.setKeyboardTracking(False)
+
+                def on_scale_changed(value, bid=img_id, fn=apply_fn):
+                    fn(value)
+                    persist_scale(bid, value)
+
+                scale_spin.valueChanged.connect(on_scale_changed)
+                scale_row.addWidget(scale_spin)
+                scale_row.addStretch()
+                page_layout.addLayout(scale_row)
 
         def build_image_caption(block_id, caption):
             info = self.figure_reference_map.get(block_id)
@@ -5225,7 +5262,7 @@ class MainWindow(QMainWindow):
 
             elif btype == "image":
                 caption_text = build_image_caption(block.get("id"), block.get("caption", ""))
-                add_image_to_page(block.get("path", ""), block.get("scale_percent", 100), caption_text)
+                add_image_to_page(block.get("path", ""), block.get("scale_percent", 100), caption_text, block.get("id"))
 
             elif btype == "images":
                 title = (block.get("title", "") or "").strip()
@@ -5236,7 +5273,7 @@ class MainWindow(QMainWindow):
 
                 for img in self.ensure_group_images_defaults(block.get("images", [])):
                     caption_text = build_image_caption(img.get("id"), img.get("caption", ""))
-                    add_image_to_page(img.get("path", ""), img.get("scale_percent", 100), caption_text)
+                    add_image_to_page(img.get("path", ""), img.get("scale_percent", 100), caption_text, img.get("id"))
 
             elif btype == "equation":
                 latex = block.get("latex", "")
@@ -5337,6 +5374,13 @@ class MainWindow(QMainWindow):
         container_layout.addWidget(page)
         scroll.setWidget(container)
         root.addWidget(scroll)
+
+        btn_row = QHBoxLayout()
+        btn_row.addStretch()
+        btn_close = QPushButton("Chiudi")
+        btn_row.addWidget(btn_close)
+        btn_close.clicked.connect(dialog.accept)
+        root.addLayout(btn_row)
 
         dialog.exec()
 
@@ -9552,7 +9596,12 @@ class MainWindow(QMainWindow):
                 caption = img.get("caption", "").strip()
                 label = info["label"] if info else "Figura"
                 caption_text = f"{label} — {caption}" if caption else (label if info else "")
-                self._add_figure_block_to_docx(doc, path, caption_text)
+                self._add_figure_block_to_docx(
+                    doc,
+                    path,
+                    caption_text,
+                    scale_percent=img.get("scale_percent", 100)
+                )
 
         elif btype == "table":
             data = block.get("data", [])
@@ -9944,7 +9993,12 @@ class MainWindow(QMainWindow):
             for img in self.ensure_group_images_defaults(block.get("images", [])):
                 path = self.resolve_runtime_path(img.get("path", ""))
                 if path and os.path.exists(path):
-                    story.append(self._scaled_image_for_pdf(path))
+                    story.append(
+                        self._scaled_image_for_pdf(
+                            path,
+                            scale_percent=img.get("scale_percent", 100)
+                        )
+                    )
 
                 info = self.figure_reference_map.get(img.get("id"))
                 caption = img.get("caption", "").strip()
