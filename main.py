@@ -29,7 +29,7 @@ from reportlab.platypus import Image as RLImage, Paragraph, Spacer, Table as RLT
 from reportlab.platypus.tableofcontents import TableOfContents
 from reportlab.platypus.doctemplate import ActionFlowable
 from PySide6.QtCore import Qt, QSettings, QStandardPaths, QTimer, QObject, QThread, Signal, Slot, QPropertyAnimation, QUrl, QEvent,QEasingCurve
-from PySide6.QtGui import QAction, QKeySequence, QPixmap, QShortcut, QTextListFormat, QTextDocument, QTextCharFormat, QTextCursor, QDesktopServices, QImage,QCursor
+from PySide6.QtGui import QAction, QKeySequence, QPixmap, QShortcut, QTextListFormat, QTextDocument, QTextCharFormat, QTextCursor, QDesktopServices, QImage,QCursor, QPainter, QPen, QColor
 from PySide6.QtWidgets import (
     QApplication,
     QDialog,
@@ -5135,7 +5135,17 @@ class MainWindow(QMainWindow):
         dialog = QDialog(self)
         dialog.setWindowTitle("Anteprima pagina")
         available = self.screen().availableGeometry()
-        dialog.resize(min(900, available.width()), min(1000, available.height()))
+
+        # Foglio con larghezza e margini proporzionali a un A4 (21 cm, margini
+        # laterali 2 cm) come nella stampa PDF. La larghezza si adatta allo
+        # schermo per evitare lo scorrimento orizzontale.
+        page_w = min(900, max(420, available.width() - 120))
+        px_per_mm = page_w / 210.0
+        margin_lr = int(round(20 * px_per_mm))
+        margin_top = int(round(26 * px_per_mm))
+        margin_bottom = int(round(22 * px_per_mm))
+
+        dialog.resize(min(page_w + 120, available.width()), min(1000, available.height()))
 
         root = QVBoxLayout(dialog)
 
@@ -5146,15 +5156,48 @@ class MainWindow(QMainWindow):
 
         container = QWidget()
         container_layout = QVBoxLayout(container)
-        container_layout.setAlignment(Qt.AlignTop)
+        container_layout.setAlignment(Qt.AlignTop | Qt.AlignHCenter)
 
-        page = QFrame()
+        # Filetto tratteggiato ogni "altezza utile" di un A4 (297 mm meno i
+        # margini alto/basso) come indicazione del cambio pagina. È approssimato:
+        # in stampa i blocchi non vengono spezzati come accade qui.
+        page_step = (297 - 26 - 22) * px_per_mm
+
+        class A4PageFrame(QFrame):
+            def paintEvent(self, event):
+                super().paintEvent(event)
+                step = self._page_step
+                if step <= 0:
+                    return
+                painter = QPainter(self)
+                line_pen = QPen(QColor("#b0b0b0"))
+                line_pen.setStyle(Qt.DashLine)
+                text_pen = QPen(QColor("#888888"))
+                font = painter.font()
+                font.setPointSize(8)
+                painter.setFont(font)
+                width = self.width()
+                height = self.height()
+                y = self._content_top + step
+                page_index = 2
+                while y < height:
+                    painter.setPen(line_pen)
+                    painter.drawLine(0, int(y), width, int(y))
+                    painter.setPen(text_pen)
+                    painter.drawText(width - 58, int(y) + 14, f"pag. {page_index}")
+                    y += step
+                    page_index += 1
+                painter.end()
+
+        page = A4PageFrame()
+        page._content_top = margin_top
+        page._page_step = page_step
         page.setFrameShape(QFrame.Box)
         page.setStyleSheet("QFrame { background: white; border: 1px solid #999; }")
-        page.setMinimumWidth(720)
+        page.setFixedWidth(page_w)
 
         page_layout = QVBoxLayout(page)
-        page_layout.setContentsMargins(60, 60, 60, 60)
+        page_layout.setContentsMargins(margin_lr, margin_top, margin_lr, margin_bottom)
         page_layout.setSpacing(18)
 
         # La scala si applica dal vivo e viene persistita subito: per il nodo
