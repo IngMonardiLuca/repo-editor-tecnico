@@ -2704,7 +2704,8 @@ class BlockEditorWidget(QWidget):
             )
         self.btn_expand_all = QPushButton("Espandi tutti")
         self.btn_collapse_all = QPushButton("Collassa tutti")
-        for btn in (self.btn_expand_all, self.btn_collapse_all):
+        self.btn_preview_node = QPushButton("Anteprima pagina")
+        for btn in (self.btn_expand_all, self.btn_collapse_all, self.btn_preview_node):
             btn.setFixedHeight(30)
             btn.setStyleSheet(
                 "QPushButton { border: 1px solid #d6d6d6; border-radius: 5px; background: #fafafa; padding: 0 10px; }"
@@ -2718,6 +2719,7 @@ class BlockEditorWidget(QWidget):
         top_row.addWidget(self.btn_add_table)
         top_row.addWidget(self.btn_expand_all)
         top_row.addWidget(self.btn_collapse_all)
+        top_row.addWidget(self.btn_preview_node)
         top_row.addStretch()
         root_layout.addLayout(top_row)
 
@@ -2728,6 +2730,7 @@ class BlockEditorWidget(QWidget):
         self.btn_add_table.clicked.connect(self.add_table_block)
         self.btn_expand_all.clicked.connect(self.expand_all_blocks)
         self.btn_collapse_all.clicked.connect(self.collapse_all_blocks)
+        self.btn_preview_node.clicked.connect(self.main_window.show_node_preview)
 
         self.scroll_area = QScrollArea()
         self.scroll_area.setWidgetResizable(True)
@@ -5101,6 +5104,239 @@ class MainWindow(QMainWindow):
 
         btn_save.clicked.connect(save_cover)
         btn_cancel.clicked.connect(dialog.reject)
+
+        dialog.exec()
+
+    def show_node_preview(self):
+        # Anteprima a schermo (sola lettura) del nodo selezionato: lavora su una
+        # copia dei blocchi e non scrive nulla nel progetto.
+        self.save_current_item_content()
+        self.update_figure_references()
+        self.update_equation_references()
+
+        if self.current_item is None:
+            QMessageBox.warning(
+                self,
+                "Nessun nodo selezionato",
+                "Seleziona prima un capitolo o paragrafo nella struttura."
+            )
+            return
+
+        blocks = self.ensure_blocks_defaults_list(
+            deepcopy(self.current_item.data(0, CONTENT_ROLE) or [])
+        )
+
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Anteprima pagina")
+        available = self.screen().availableGeometry()
+        dialog.resize(min(900, available.width()), min(1000, available.height()))
+
+        root = QVBoxLayout(dialog)
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+
+        container = QWidget()
+        container_layout = QVBoxLayout(container)
+        container_layout.setAlignment(Qt.AlignTop)
+
+        page = QFrame()
+        page.setFrameShape(QFrame.Box)
+        page.setStyleSheet("QFrame { background: white; border: 1px solid #999; }")
+        page.setMinimumWidth(720)
+
+        page_layout = QVBoxLayout(page)
+        page_layout.setContentsMargins(60, 60, 60, 60)
+        page_layout.setSpacing(18)
+
+        def add_image_to_page(image_path, scale_percent, caption_text):
+            resolved = self.resolve_runtime_path(image_path or "")
+
+            if resolved and os.path.exists(resolved):
+                pix = QPixmap(resolved)
+
+                if not pix.isNull():
+                    scale_percent = int(scale_percent or 100)
+
+                    scaled_w = max(1, int(pix.width() * scale_percent / 100))
+                    scaled_h = max(1, int(pix.height() * scale_percent / 100))
+
+                    scaled_pix = pix.scaled(
+                        scaled_w,
+                        scaled_h,
+                        Qt.KeepAspectRatio,
+                        Qt.SmoothTransformation
+                    )
+
+                    img_lbl = QLabel()
+                    img_lbl.setAlignment(Qt.AlignCenter)
+                    img_lbl.setPixmap(scaled_pix)
+
+                    page_layout.addWidget(img_lbl)
+
+            if caption_text:
+                caption_lbl = QLabel(caption_text)
+                caption_lbl.setAlignment(Qt.AlignCenter)
+                caption_lbl.setWordWrap(True)
+                caption_lbl.setStyleSheet("QLabel { font-style: italic; font-size: 9pt; color: black; }")
+                page_layout.addWidget(caption_lbl)
+
+        def build_image_caption(block_id, caption):
+            info = self.figure_reference_map.get(block_id)
+            caption = (caption or "").strip()
+
+            if info:
+                label = info.get("label", "")
+                if caption:
+                    return f"{label} — {caption}"
+                return label
+
+            return caption
+
+        for block in blocks:
+            btype = block.get("type")
+
+            if btype == "text":
+                text_preview = QTextEdit()
+                text_preview.setReadOnly(True)
+                text_preview.setFrameShape(QFrame.NoFrame)
+                text_preview.setStyleSheet("QTextEdit { background: white; color: black; border: none; }")
+                text_preview.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+                text_preview.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+                text_preview.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+
+                html = block.get("html", "")
+                if html:
+                    rendered_html = self.render_text_references(html)
+                    text_preview.setHtml(rendered_html)
+                else:
+                    text_preview.setPlainText(self.render_text_references(block.get("text", "")))
+
+                # Adatta l'altezza al contenuto reale, così i blocchi restano compatti.
+                def _fit_text_height(_=None, te=text_preview):
+                    doc = te.document()
+                    te.setFixedHeight(int(doc.size().height() + 2 * doc.documentMargin()))
+
+                text_preview.document().documentLayout().documentSizeChanged.connect(_fit_text_height)
+                _fit_text_height()
+                page_layout.addWidget(text_preview)
+
+            elif btype == "image":
+                caption_text = build_image_caption(block.get("id"), block.get("caption", ""))
+                add_image_to_page(block.get("path", ""), block.get("scale_percent", 100), caption_text)
+
+            elif btype == "images":
+                title = (block.get("title", "") or "").strip()
+                if title:
+                    title_lbl = QLabel(title)
+                    title_lbl.setStyleSheet("QLabel { font-weight: bold; color: black; }")
+                    page_layout.addWidget(title_lbl)
+
+                for img in self.ensure_group_images_defaults(block.get("images", [])):
+                    caption_text = build_image_caption(img.get("id"), img.get("caption", ""))
+                    add_image_to_page(img.get("path", ""), img.get("scale_percent", 100), caption_text)
+
+            elif btype == "equation":
+                latex = block.get("latex", "")
+                caption = (block.get("caption", "") or "").strip()
+                numbering_mode = block.get("numbering_mode", "none")
+
+                eq_info = self.equation_reference_map.get(block.get("id"))
+                eq_label = eq_info["label"] if eq_info else ""
+
+                path = self.render_equation_to_png(latex, block.get("id"))
+
+                if path and os.path.exists(path):
+                    eq_lbl = QLabel()
+                    eq_lbl.setAlignment(Qt.AlignCenter)
+                    eq_lbl.setPixmap(QPixmap(path))
+
+                    if numbering_mode == "number" and eq_label:
+                        number_lbl = QLabel(eq_label)
+                        number_lbl.setStyleSheet("QLabel { color: black; }")
+
+                        eq_row = QHBoxLayout()
+                        eq_row.addWidget(eq_lbl, 1)
+                        eq_row.addWidget(number_lbl, 0, Qt.AlignRight)
+
+                        page_layout.addLayout(eq_row)
+                    else:
+                        page_layout.addWidget(eq_lbl)
+
+                        if numbering_mode == "number_caption" and eq_label and caption:
+                            caption_lbl = QLabel(f"{eq_label} – {caption}")
+                            caption_lbl.setAlignment(Qt.AlignCenter)
+                            caption_lbl.setWordWrap(True)
+                            caption_lbl.setStyleSheet("QLabel { font-style: italic; color: black; }")
+                            page_layout.addWidget(caption_lbl)
+                else:
+                    error_lbl = QLabel(f"[Equazione non renderizzabile: {block.get('latex', '')}]")
+                    error_lbl.setStyleSheet("QLabel { color: black; }")
+                    page_layout.addWidget(error_lbl)
+
+            elif btype == "table":
+                rows = int(block.get("rows", 0) or 0)
+                cols = int(block.get("cols", 0) or 0)
+                data = block.get("data", [])
+
+                if rows > 0 and cols > 0:
+                    table = QTableWidget(rows, cols)
+                    table.setEditTriggers(QTableWidget.NoEditTriggers)
+                    table.horizontalHeader().setVisible(False)
+                    table.verticalHeader().setVisible(False)
+                    table.setStyleSheet(
+                        "QTableWidget { background: white; color: black; gridline-color: #999; }"
+                        "QTableWidget::item { background: white; color: black; }"
+                    )
+
+                    cell_formats = block.get("cell_formats", {})
+
+                    for r in range(rows):
+                        for c in range(cols):
+                            value = ""
+                            if r < len(data) and c < len(data[r]):
+                                value = data[r][c]
+
+                            item = QTableWidgetItem(value)
+
+                            fmt = cell_formats.get(f"{r},{c}", {})
+                            halign = fmt.get("halign", "left")
+                            valign = fmt.get("valign", "middle")
+
+                            if halign in ("center", "justify"):
+                                hflag = Qt.AlignHCenter
+                            elif halign == "right":
+                                hflag = Qt.AlignRight
+                            else:
+                                hflag = Qt.AlignLeft
+
+                            if valign == "top":
+                                vflag = Qt.AlignTop
+                            elif valign == "bottom":
+                                vflag = Qt.AlignBottom
+                            else:
+                                vflag = Qt.AlignVCenter
+
+                            item.setTextAlignment(hflag | vflag)
+                            table.setItem(r, c, item)
+
+                    for span in block.get("spans", []):
+                        r1 = span.get("r1", 0)
+                        c1 = span.get("c1", 0)
+                        r2 = span.get("r2", r1)
+                        c2 = span.get("c2", c1)
+
+                        if (r2 - r1 + 1) > 1 or (c2 - c1 + 1) > 1:
+                            table.setSpan(r1, c1, r2 - r1 + 1, c2 - c1 + 1)
+
+                    table.resizeRowsToContents()
+                    page_layout.addWidget(table)
+
+        container_layout.addWidget(page)
+        scroll.setWidget(container)
+        root.addWidget(scroll)
 
         dialog.exec()
 
