@@ -1356,6 +1356,7 @@ class EquationBlockWidget(BaseBlockWidget):
             "latex": "",
             "caption": "",
             "numbering_mode": "none",
+            "scale_percent": 100,
             "collapsed": False,
         }
         base.update(data or {})
@@ -2223,6 +2224,7 @@ class EquationBlockWidget(BaseBlockWidget):
                 self.numbering_mode_combo.currentData()
                 or "none"
             ),
+            "scale_percent": int(self.data.get("scale_percent", 100) or 100),
         }
 
         data.update(self.export_common_data())
@@ -5214,11 +5216,16 @@ class MainWindow(QMainWindow):
                         for img in widget.images:
                             if img.get("id") == img_id:
                                 img["scale_percent"] = value
+                    elif isinstance(widget, EquationBlockWidget):
+                        if widget.data.get("id") == img_id:
+                            widget.data["scale_percent"] = value
                 self.save_current_item_content()
             else:
                 node_blocks = node_item.data(0, CONTENT_ROLE) or []
                 for b in node_blocks:
                     if b.get("type") == "image" and b.get("id") == img_id:
+                        b["scale_percent"] = value
+                    elif b.get("type") == "equation" and b.get("id") == img_id:
                         b["scale_percent"] = value
                     elif b.get("type") == "images":
                         for img in b.get("images", []):
@@ -5347,9 +5354,24 @@ class MainWindow(QMainWindow):
                 path = self.render_equation_to_png(latex, block.get("id"))
 
                 if path and os.path.exists(path):
+                    eq_scale = int(block.get("scale_percent", 100) or 100)
+                    eq_base_pix = QPixmap(path)
+
                     eq_lbl = QLabel()
                     eq_lbl.setAlignment(Qt.AlignCenter)
-                    eq_lbl.setPixmap(QPixmap(path))
+
+                    def apply_eq_scale(value, lbl=eq_lbl, base=eq_base_pix):
+                        value = int(value or 100)
+                        scaled_w = max(1, int(base.width() * value / 100))
+                        scaled_h = max(1, int(base.height() * value / 100))
+                        lbl.setPixmap(base.scaled(
+                            scaled_w,
+                            scaled_h,
+                            Qt.KeepAspectRatio,
+                            Qt.SmoothTransformation
+                        ))
+
+                    apply_eq_scale(eq_scale)
 
                     if numbering_mode == "number" and eq_label:
                         number_lbl = QLabel(eq_label)
@@ -5369,6 +5391,28 @@ class MainWindow(QMainWindow):
                             caption_lbl.setWordWrap(True)
                             caption_lbl.setStyleSheet("QLabel { font-style: italic; color: black; }")
                             page_layout.addWidget(caption_lbl)
+
+                    eq_block_id = block.get("id")
+                    if eq_block_id is not None:
+                        eq_scale_row = QHBoxLayout()
+                        eq_scale_row.addStretch()
+                        eq_scale_row.addWidget(QLabel("% scala stampa"))
+
+                        eq_scale_spin = QSpinBox()
+                        eq_scale_spin.setRange(10, 200)
+                        eq_scale_spin.setSingleStep(5)
+                        eq_scale_spin.setValue(eq_scale)
+                        eq_scale_spin.setFixedWidth(80)
+                        eq_scale_spin.setKeyboardTracking(False)
+
+                        def on_eq_scale_changed(value, bid=eq_block_id, fn=apply_eq_scale, node=node_item):
+                            fn(value)
+                            persist_scale(node, bid, value)
+
+                        eq_scale_spin.valueChanged.connect(on_eq_scale_changed)
+                        eq_scale_row.addWidget(eq_scale_spin)
+                        eq_scale_row.addStretch()
+                        page_layout.addLayout(eq_scale_row)
                 else:
                     error_lbl = QLabel(f"[Equazione non renderizzabile: {block.get('latex', '')}]")
                     error_lbl.setStyleSheet("QLabel { color: black; }")
@@ -9644,6 +9688,9 @@ class MainWindow(QMainWindow):
                 doc.add_paragraph(f"[Equazione non esportabile: {latex}]")
                 return
 
+            scale_percent = int(block.get("scale_percent", 100) or 100)
+            eq_width = Inches(4.8 * max(10, min(200, scale_percent)) / 100.0)
+
             if numbering_mode == "number" and eq_label:
                 table = doc.add_table(rows=1, cols=2)
                 table.autofit = False
@@ -9659,7 +9706,7 @@ class MainWindow(QMainWindow):
 
                 p_eq = left_cell.paragraphs[0]
                 p_eq.alignment = WD_ALIGN_PARAGRAPH.CENTER
-                self._add_picture_to_paragraph(p_eq, path, width=Inches(4.8))
+                self._add_picture_to_paragraph(p_eq, path, width=eq_width)
 
                 p_num = right_cell.paragraphs[0]
                 p_num.alignment = WD_ALIGN_PARAGRAPH.RIGHT
@@ -9681,7 +9728,7 @@ class MainWindow(QMainWindow):
             else:
                 p = doc.add_paragraph()
                 p.alignment = WD_ALIGN_PARAGRAPH.CENTER
-                self._add_picture_to_paragraph(p, path, width=Inches(4.8))
+                self._add_picture_to_paragraph(p, path, width=eq_width)
 
                 if numbering_mode == "number_caption" and eq_label and caption:
                     cap_p = doc.add_paragraph()
@@ -10045,7 +10092,10 @@ class MainWindow(QMainWindow):
                 )
                 return
 
-            equation_image = self._scaled_image_for_pdf(path)
+            equation_image = self._scaled_image_for_pdf(
+                path,
+                scale_percent=block.get("scale_percent", 100)
+            )
 
             if numbering_mode == "number" and eq_label:
                 number_style = ParagraphStyle(
