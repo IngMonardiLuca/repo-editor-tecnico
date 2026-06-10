@@ -4237,6 +4237,11 @@ class AiResultReceiver(QObject):
     def generation_finished(self):
         self.button.setEnabled(True)
 
+# Segreto interno per firmare la cache licenza nel settings.ini (anti-modifica manuale).
+# In Fase 3 il modulo verrà compilato con Nuitka per nasconderlo.
+_LICENSE_CACHE_SECRET = b"ET-liccache-9f3b1c7a52e84d06b1f4-do-not-share"
+
+
 class LicenseManager:
     def __init__(self, settings):
         self.settings = settings
@@ -4283,7 +4288,8 @@ class LicenseManager:
             scadenza=None,
             tipo_licenza="",
             tipo_utente="",
-            id_utente=""
+            id_utente="",
+            server_time=None
         ):
 
             self.settings.setValue("license/ultimo_esito", esito)
@@ -4318,7 +4324,8 @@ class LicenseManager:
                 "messaggio": messaggio,
                 "scadenza": scadenza,
                 "tipo_licenza": tipo_licenza,
-                "tipo_utente": tipo_utente
+                "tipo_utente": tipo_utente,
+                "server_time": server_time
             }
 
         if not chiave:
@@ -4370,7 +4377,8 @@ class LicenseManager:
             scadenza,
             data.get("tipo_licenza", ""),
             data.get("tipo_utente", ""),
-            data.get("id_utente", "")
+            data.get("id_utente", ""),
+            data.get("server_time")
         )
 
     def get_ultima_verifica(self):
@@ -4431,7 +4439,98 @@ class LicenseManager:
 
         return ""
 
-class MainWindow(QMainWindow):    
+    def _offline_max_seconds(self):
+        try:
+            ore = int(self.settings.value("license/max_offline_ore", 48))
+        except (TypeError, ValueError):
+            ore = 48
+        if ore <= 0:
+            ore = 48
+        return ore * 3600
+
+    def _firma_cache(self, scadenza, ora_server, ora_locale):
+        import hmac, hashlib
+        msg = f"{self.get_machine_fingerprint()}|{scadenza}|{ora_server}|{ora_locale}".encode("utf-8")
+        return hmac.new(_LICENSE_CACHE_SECRET, msg, hashlib.sha256).hexdigest()
+
+    def _salva_good_cache(self, risultato):
+        """Salva la cache 'buona' firmata SOLO dopo una verifica online andata a buon fine."""
+        import time
+        now_local = int(time.time())
+        try:
+            ora_server = int(risultato.get("server_time") or now_local)
+        except (TypeError, ValueError):
+            ora_server = now_local
+        scadenza = risultato.get("scadenza", "") or ""
+        self.settings.setValue("license/good_scadenza", scadenza)
+        self.settings.setValue("license/good_ora_server", ora_server)
+        self.settings.setValue("license/good_ora_locale", now_local)
+        self.settings.setValue(
+            "license/good_firma",
+            self._firma_cache(scadenza, ora_server, now_local)
+        )
+        self.settings.sync()
+
+    def _valuta_offline(self):
+        """Autorizzazione offline: cache firmata integra AND entro finestra AND entro scadenza AND no rollback orologio."""
+        import time, hmac
+        from datetime import datetime, timezone
+
+        scadenza = self.settings.value("license/good_scadenza", "")
+        firma    = self.settings.value("license/good_firma", "")
+        try:
+            ora_server = int(self.settings.value("license/good_ora_server", 0) or 0)
+            ora_locale = int(self.settings.value("license/good_ora_locale", 0) or 0)
+        except (TypeError, ValueError):
+            ora_server = ora_locale = 0
+
+        if not scadenza or not firma or not ora_server or not ora_locale:
+            return (False, "Nessuna verifica online valida disponibile. Collegati a internet per attivare la licenza.")
+
+        if not hmac.compare_digest(firma, self._firma_cache(scadenza, ora_server, ora_locale)):
+            return (False, "Dati di licenza alterati. Collegati a internet per riverificare la licenza.")
+
+        now_local = int(time.time())
+        if now_local < ora_locale:   # orologio spostato indietro
+            return (False, "Orologio di sistema modificato. Collegati a internet per riverificare la licenza.")
+
+        trascorso = now_local - ora_locale
+        if trascorso > self._offline_max_seconds():
+            ore = self._offline_max_seconds() // 3600
+            return (False, f"Limite di utilizzo offline superato ({ore} ore). Collegati a internet per riverificare la licenza.")
+
+        try:
+            scad_date = datetime.strptime(str(scadenza).strip()[:10], "%Y-%m-%d").date()
+        except ValueError:
+            return (False, "Formato scadenza licenza non valido. Riverifica online.")
+
+        # tempo reale stimato a partire dall'ora del server all'ultimo sync (anti-rollback)
+        tempo_reale = datetime.fromtimestamp(ora_server + trascorso, tz=timezone.utc).date()
+        if scad_date < tempo_reale:
+            return (False, "Licenza scaduta.")
+
+        return (True, "")
+
+    def verifica_e_autorizza(self):
+        """Decisione unica all'avvio: il server comanda; se offline → cache firmata. Ritorna (ok: bool, motivo: str)."""
+        if not self.get_license_key().strip():
+            return (False, "Chiave licenza mancante.")
+
+        risultato = self.verifica_licenza_server()
+        esito = risultato.get("esito", "errore")
+
+        if esito == "ok":
+            self._salva_good_cache(risultato)
+            return (True, "")
+
+        if esito == "errore":               # rete assente → percorso offline
+            return self._valuta_offline()
+
+        # rifiuto reale dal server (revocata/sospesa/scaduta/chiave_errata/bloccata/macchine_esaurite)
+        return (False, risultato.get("messaggio", "Licenza non valida."))
+
+
+class MainWindow(QMainWindow):
     def open_manuali_web(self):
         # I manuali non sono più gestiti dal desktop: vengono pubblicati sul sito.
         # Questa voce apre il sito nel browser predefinito.
@@ -4477,7 +4576,10 @@ class MainWindow(QMainWindow):
         self.license_manager = LicenseManager(self.settings)
         saved_workspace_dir = self.settings.value("workspace/workspace_dir", "")
 
-        if self.license_manager.is_license_locally_valid():
+        # Controllo licenza all'avvio: il server comanda; se offline → cache firmata entro finestra e scadenza.
+        self.license_ok, self.license_block_msg = self.license_manager.verifica_e_autorizza()
+
+        if self.license_ok:
             self.workspace_dir = saved_workspace_dir
             self.workspace_ready = bool(
                 self.workspace_dir and os.path.exists(self.workspace_dir)
@@ -4487,13 +4589,14 @@ class MainWindow(QMainWindow):
             self.workspace_ready = False
 
         self.workspace_dependent_actions = []
-        if not self.license_manager.is_license_locally_valid():
+        if not self.license_ok:
+            _msg = self.license_block_msg or "Licenza non valida, mancante o scaduta."
             QTimer.singleShot(
                 300,
                 lambda: QMessageBox.warning(
                     self,
                     "Licenza non valida",
-                    "Licenza non valida, mancante o scaduta.\n\n"
+                    f"{_msg}\n\n"
                     "Il workspace è stato disabilitato.\n"
                     "Verificare la licenza per continuare a utilizzare il software."
                 )
@@ -5747,6 +5850,7 @@ class MainWindow(QMainWindow):
 
                 self.settings.sync()
 
+                self.license_ok = False
                 self.workspace_dir = ""
                 self.workspace_ready = False
 
@@ -5814,6 +5918,9 @@ class MainWindow(QMainWindow):
 
             if esito == "ok":
 
+                self.license_ok = True
+                self.license_manager._salva_good_cache(risultato)
+
                 saved_workspace = self.settings.value(
                     "workspace/workspace_dir",
                     ""
@@ -5854,6 +5961,7 @@ class MainWindow(QMainWindow):
 
             else:
 
+                self.license_ok = False
                 self.workspace_dir = ""
                 self.workspace_ready = False
 
@@ -6228,7 +6336,7 @@ class MainWindow(QMainWindow):
 
     def update_workspace_enabled_state(self):
 
-        license_ok = self.license_manager.is_license_locally_valid()
+        license_ok = getattr(self, "license_ok", False)
 
         self.workspace_ready = bool(
             license_ok and
