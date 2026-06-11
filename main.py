@@ -4195,69 +4195,107 @@ class GeminiWorker(QObject):
             "anthropic": "Claude",
         }.get(self.provider, "Gemini")
 
+    def _http_post_json(self, url, body, headers):
+        """POST JSON via urllib (nessun SDK, compatibile con Nuitka).
+        In caso di errore HTTP legge il corpo per restituire un messaggio leggibile."""
+        import urllib.request
+        import urllib.error
+        import json as _json
+
+        payload = _json.dumps(body).encode("utf-8")
+        req = urllib.request.Request(
+            url,
+            data=payload,
+            headers=headers,
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=120) as resp:
+                return _json.loads(resp.read().decode("utf-8"))
+        except urllib.error.HTTPError as e:
+            detail = ""
+            try:
+                detail = e.read().decode("utf-8")
+            except Exception:
+                pass
+            raise RuntimeError(
+                f"Errore {e.code} dal provider: {detail or e.reason}"
+            )
+
     def _run_gemini(self, full_prompt):
-        from google import genai
+        url = (
+            "https://generativelanguage.googleapis.com/v1beta/models/"
+            f"{self.model_name}:generateContent?key={self.api_key}"
+        )
 
-        client = genai.Client(api_key=self.api_key)
-
+        body = {"contents": [{"parts": [{"text": full_prompt}]}]}
         if self.reasoning == "avanzato":
-            from google.genai import types
-            config = types.GenerateContentConfig(
-                thinking_config=types.ThinkingConfig(thinking_budget=8192)
-            )
-            response = client.models.generate_content(
-                model=self.model_name,
-                contents=full_prompt,
-                config=config,
-            )
-        else:
-            response = client.models.generate_content(
-                model=self.model_name,
-                contents=full_prompt,
-            )
+            body["generationConfig"] = {
+                "thinkingConfig": {"thinkingBudget": 8192}
+            }
 
-        result = ""
-        if hasattr(response, "text") and response.text:
-            result = response.text.strip()
-        return result
+        data = self._http_post_json(
+            url,
+            body,
+            headers={"Content-Type": "application/json"},
+        )
+
+        candidates = data.get("candidates") or []
+        if not candidates:
+            return ""
+        parts = (candidates[0].get("content", {}) or {}).get("parts", []) or []
+        return "".join(p.get("text", "") for p in parts).strip()
 
     def _run_openai(self, full_prompt):
-        from openai import OpenAI
-
-        client = OpenAI(api_key=self.api_key)
-
-        kwargs = {
+        body = {
             "model": self.model_name,
             "input": full_prompt,
         }
         if self.reasoning == "avanzato":
-            kwargs["reasoning"] = {"effort": "high"}
+            body["reasoning"] = {"effort": "high"}
 
-        response = client.responses.create(**kwargs)
+        data = self._http_post_json(
+            "https://api.openai.com/v1/responses",
+            body,
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {self.api_key}",
+            },
+        )
 
-        text = getattr(response, "output_text", "") or ""
-        return text.strip()
+        # Il comodo "output_text" esiste solo nell'SDK: nel JSON grezzo
+        # ricostruisco il testo dall'array "output".
+        out = []
+        for item in data.get("output", []) or []:
+            for c in item.get("content", []) or []:
+                if c.get("type") == "output_text":
+                    out.append(c.get("text", "") or "")
+        return "".join(out).strip()
 
     def _run_anthropic(self, full_prompt):
-        from anthropic import Anthropic
-
-        client = Anthropic(api_key=self.api_key)
-
-        kwargs = {
+        body = {
             "model": self.model_name,
             "max_tokens": 4096,
             "messages": [{"role": "user", "content": full_prompt}],
         }
         if self.reasoning == "avanzato":
-            kwargs["max_tokens"] = 8192
-            kwargs["thinking"] = {"type": "enabled", "budget_tokens": 4096}
+            body["max_tokens"] = 8192
+            body["thinking"] = {"type": "enabled", "budget_tokens": 4096}
 
-        response = client.messages.create(**kwargs)
+        data = self._http_post_json(
+            "https://api.anthropic.com/v1/messages",
+            body,
+            headers={
+                "Content-Type": "application/json",
+                "x-api-key": self.api_key,
+                "anthropic-version": "2023-06-01",
+            },
+        )
 
         parts = []
-        for block in getattr(response, "content", []) or []:
-            if getattr(block, "type", None) == "text":
-                parts.append(getattr(block, "text", "") or "")
+        for block in data.get("content", []) or []:
+            if block.get("type") == "text":
+                parts.append(block.get("text", "") or "")
         return "".join(parts).strip()
 
 class AiResultReceiver(QObject):
