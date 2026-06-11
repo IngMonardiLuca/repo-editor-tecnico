@@ -421,6 +421,7 @@ class TextBlockWidget(BaseBlockWidget):
         self.btn_underline = QPushButton("U")
         self.btn_superscript = QPushButton("x²")
         self.btn_subscript = QPushButton("x₂")
+        self.btn_greek = QPushButton("αβ")
         self.btn_bullets = QPushButton("•")
         self.btn_numbers = QPushButton("1.")
         self.btn_justify = QPushButton("J")
@@ -434,6 +435,7 @@ class TextBlockWidget(BaseBlockWidget):
         self.btn_underline.setToolTip("Sottolineato")
         self.btn_superscript.setToolTip("Apice")
         self.btn_subscript.setToolTip("Pedice")
+        self.btn_greek.setToolTip("Lettere greche")
         self.btn_bullets.setToolTip("Elenco puntato")
         self.btn_numbers.setToolTip("Elenco numerato")
         self.btn_justify.setToolTip("Giustifica")
@@ -471,6 +473,14 @@ class TextBlockWidget(BaseBlockWidget):
             "QToolTip { background-color: #f2f2f2; color: black; border: 1px solid #c8c8c8; padding: 4px; }"
         )
         toolbar_row.addWidget(self.btn_subscript)
+
+        self.btn_greek.setFixedSize(28, 24)
+        self.btn_greek.setStyleSheet(
+            "QPushButton { border: 1px solid #d6d6d6; border-radius: 4px; background: #fafafa; }"
+            "QPushButton:hover { background: #f0f0f0; }"
+            "QToolTip { background-color: #f2f2f2; color: black; border: 1px solid #c8c8c8; padding: 4px; }"
+        )
+        toolbar_row.addWidget(self.btn_greek)
 
         self.btn_bullets.setFixedSize(28, 24)
         self.btn_bullets.setStyleSheet(
@@ -585,6 +595,7 @@ class TextBlockWidget(BaseBlockWidget):
         self.btn_underline.clicked.connect(self.toggle_underline)
         self.btn_superscript.clicked.connect(self.toggle_superscript)
         self.btn_subscript.clicked.connect(self.toggle_subscript)
+        self.btn_greek.clicked.connect(self.show_greek_menu)
         self.btn_bullets.clicked.connect(self.toggle_bullet_list)
         self.btn_numbers.clicked.connect(self.toggle_numbered_list)
         self.btn_justify.clicked.connect(self.apply_justify)
@@ -790,6 +801,54 @@ class TextBlockWidget(BaseBlockWidget):
             fmt.setVerticalAlignment(QTextCharFormat.AlignSubScript)
 
         self.editor.mergeCurrentCharFormat(fmt)
+        self.editor.setFocus()
+        self.parent_editor.main_window.mark_dirty()
+
+    def show_greek_menu(self):
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Lettere greche")
+        dialog.setStyleSheet(
+            "QDialog { background: #f2f2f2; color: black; }"
+            "QLabel { color: black; }"
+            "QPushButton { border: 1px solid #d6d6d6; border-radius: 4px; background: #fafafa; padding: 4px 8px; color: black; }"
+            "QPushButton:hover { background: #e8e8e8; }"
+        )
+
+        # minuscole: tutte e 24; maiuscole: solo quelle diverse dalle latine
+        lowercase = [
+            "α", "β", "γ", "δ", "ε", "ζ", "η", "θ",
+            "ι", "κ", "λ", "μ", "ν", "ξ", "ο", "π",
+            "ρ", "σ", "τ", "υ", "φ", "χ", "ψ", "ω",
+        ]
+        uppercase = [
+            "Γ", "Δ", "Θ", "Λ", "Ξ", "Π", "Σ", "Φ", "Ψ", "Ω",
+        ]
+
+        root = QVBoxLayout(dialog)
+
+        def add_grid(title, letters, columns=8):
+            root.addWidget(QLabel(title))
+            grid = QGridLayout()
+            for index, ch in enumerate(letters):
+                btn = QPushButton(ch)
+                btn.setFixedSize(34, 30)
+                btn.clicked.connect(
+                    lambda checked=False, value=ch: (
+                        self.insert_greek_letter(value),
+                        dialog.accept(),
+                    )
+                )
+                grid.addWidget(btn, index // columns, index % columns)
+            root.addLayout(grid)
+
+        add_grid("Minuscole", lowercase)
+        add_grid("Maiuscole", uppercase)
+
+        dialog.exec()
+
+    def insert_greek_letter(self, letter):
+        cursor = self.editor.textCursor()
+        cursor.insertText(letter)
         self.editor.setFocus()
         self.parent_editor.main_window.mark_dirty()
 
@@ -9526,6 +9585,35 @@ class MainWindow(QMainWindow):
 
         return " ".join(result)
 
+    def _ensure_pdf_unicode_font(self):
+        """Registra una sola volta un font Unicode (DejaVuSans, già incluso con
+        matplotlib) per rendere i caratteri greci nel PDF: Helvetica non li
+        contiene. Ritorna il nome del font registrato, oppure '' se non
+        disponibile (in tal caso si ricade sul comportamento attuale)."""
+        cached = getattr(self, "_pdf_unicode_font_name", None)
+        if cached is not None:
+            return cached
+
+        font_name = ""
+        try:
+            from reportlab.pdfbase import pdfmetrics
+            from reportlab.pdfbase.ttfonts import TTFont
+
+            ttf_path = os.path.join(
+                os.path.dirname(matplotlib.__file__),
+                "mpl-data", "fonts", "ttf", "DejaVuSans.ttf"
+            )
+
+            if os.path.exists(ttf_path):
+                if "DejaVuSans" not in pdfmetrics.getRegisteredFontNames():
+                    pdfmetrics.registerFont(TTFont("DejaVuSans", ttf_path))
+                font_name = "DejaVuSans"
+        except Exception:
+            font_name = ""
+
+        self._pdf_unicode_font_name = font_name
+        return font_name
+
     def _pdf_escape_inline_with_unicode_super_sub(self, text):
         supers = {
             "⁰": "0", "¹": "1", "²": "2", "³": "3", "⁴": "4",
@@ -9539,6 +9627,8 @@ class MainWindow(QMainWindow):
             "₊": "+", "₋": "-", "₌": "=", "₍": "(", "₎": ")",
         }
 
+        greek_font = self._ensure_pdf_unicode_font()
+
         out = []
 
         for ch in str(text):
@@ -9546,6 +9636,10 @@ class MainWindow(QMainWindow):
                 out.append(f"<super>{supers[ch]}</super>")
             elif ch in subs:
                 out.append(f"<sub>{subs[ch]}</sub>")
+            elif greek_font and 0x0370 <= ord(ch) <= 0x03FF:
+                # Caratteri greci (blocco Unicode U+0370–U+03FF): solo questi
+                # passano al font Unicode; il resto resta su Helvetica.
+                out.append(f'<font name="{greek_font}">{self._pdf_escape_inline(ch)}</font>')
             else:
                 out.append(self._pdf_escape_inline(ch))
 
