@@ -13,6 +13,11 @@ build/
 dist/
 *.spec
 
+# Build e artefatti di Nuitka (l'exe onefile pesa centinaia di MB)
+nuitka_build/
+nuitka-crash-report.xml
+*.onefile-build/
+
 # Configurazione/IDE
 .vscode/
 .idea/
