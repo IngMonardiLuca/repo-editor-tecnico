@@ -309,7 +309,7 @@ class MinimalBlockFrame(QFrame):
     def __init__(self):
         super().__init__()
         self.setFrameShape(QFrame.NoFrame)
-        self.setStyleSheet("QFrame { background: #f7f7f7; border: 1px solid #e6e6e6; border-radius: 8px; }")
+        self.setStyleSheet("QFrame { background: #eceef1; border: 1px solid #d2d6db; border-radius: 8px; }")
 
 
 def style_small_button(button):
@@ -552,7 +552,8 @@ class TextBlockWidget(BaseBlockWidget):
         self.editor.setContextMenuPolicy(Qt.DefaultContextMenu)
         self.editor.setStyleSheet("""
             QTextEdit {
-                border: none;
+                border: 1px solid #b8b8b8;
+                border-radius: 4px;
                 background: white;
                 color: black;
                 font-size: 14px;
@@ -2761,8 +2762,8 @@ class BlockEditorWidget(QWidget):
         ):
             btn.setFixedHeight(30)
             btn.setStyleSheet(
-                "QPushButton { border: 1px solid #d6d6d6; border-radius: 5px; background: #fafafa; padding: 0 10px; }"
-                "QPushButton:hover { background: #f0f0f0; }"
+                "QPushButton { border: 1px solid #7ba7d0; border-radius: 5px; background: #dceaf7; padding: 0 10px; font-weight: bold; }"
+                "QPushButton:hover { background: #cfe2f3; }"
             )
         self.btn_expand_all = QPushButton("Espandi tutti")
         self.btn_collapse_all = QPushButton("Collassa tutti")
@@ -2770,10 +2771,11 @@ class BlockEditorWidget(QWidget):
         for btn in (self.btn_expand_all, self.btn_collapse_all, self.btn_preview_node):
             btn.setFixedHeight(30)
             btn.setStyleSheet(
-                "QPushButton { border: 1px solid #d6d6d6; border-radius: 5px; background: #fafafa; padding: 0 10px; }"
+                "QPushButton { border: 1px solid #d6d6d6; border-radius: 5px; background: #fafafa; padding: 0 10px; font-weight: bold; }"
                 "QPushButton:hover { background: #f0f0f0; }"
             )
 
+        top_row.addStretch()
         top_row.addWidget(self.btn_add_text)
         top_row.addWidget(self.btn_add_image)
         top_row.addWidget(self.btn_add_images)
@@ -7032,6 +7034,7 @@ class MainWindow(QMainWindow):
     def build_top_toolbar(self):
         toolbar = QToolBar("Barra principale")
         toolbar.setMovable(False)
+        toolbar.setStyleSheet("QToolBar { background: #cfd4db; border: none; } QToolBar QPushButton { font-weight: bold; }")
         self.addToolBar(toolbar)
         act_quit = QAction("Esci", self)
         act_quit.setShortcut("Ctrl+Q")
@@ -7187,6 +7190,8 @@ class MainWindow(QMainWindow):
 
     def build_ui(self):
         central = QWidget()
+        central.setObjectName("central")
+        central.setStyleSheet("#central { background: #cfd4db; }")
         self.setCentralWidget(central)
         outer_layout = QVBoxLayout(central)
         outer_layout.setContentsMargins(10, 4, 10, 10)
@@ -7198,7 +7203,7 @@ class MainWindow(QMainWindow):
         self.workspace_label.mouseDoubleClickEvent = lambda event: self.select_workspace()
         self.workspace_label.setFixedHeight(24)
         self.workspace_label.setStyleSheet(
-            "QLabel { color: #555; background: #f7f7f7; border: 1px solid #ddd; padding-left: 6px; }"
+            "QLabel { color: #555; background: #f7f7f7; border: 1px solid #ddd; padding-left: 6px; font-weight: bold; }"
         )
         outer_layout.addWidget(self.workspace_label)
 
@@ -7214,7 +7219,7 @@ class MainWindow(QMainWindow):
         for lbl in (self.client_label, self.project_label, self.relation_label):
             lbl.setFixedHeight(24)
             lbl.setStyleSheet(
-                "QLabel { color: #555; background: #f7f7f7; border: 1px solid #ddd; padding-left: 6px; }"
+                "QLabel { color: #555; background: #f7f7f7; border: 1px solid #ddd; padding-left: 6px; font-weight: bold; }"
             )
             lbl.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
             info_row.addWidget(lbl)
@@ -7255,6 +7260,13 @@ class MainWindow(QMainWindow):
         ):
             btn.setFixedSize(140, 26)
             style_small_button(btn)
+            btn.setStyleSheet(
+                "QPushButton { border: 1px solid #7fae7f; border-radius: 4px; background: #e1f0e1; padding: 0 8px; }"
+                "QPushButton:hover { background: #d3e8d3; }"
+            )
+            btn_font = btn.font()
+            btn_font.setBold(True)
+            btn.setFont(btn_font)
 
         relation_actions_row.addStretch()
 
@@ -7274,11 +7286,11 @@ class MainWindow(QMainWindow):
         separator.setFrameShadow(QFrame.Plain)
         separator.setStyleSheet("""
         QFrame {
-            background-color: #d0d0d0;
+            background-color: #7a808a;
             border: none;
         }
         """)
-        separator.setFixedHeight(1)
+        separator.setFixedHeight(2)
         separator.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
 
         outer_layout.addWidget(separator)
@@ -7289,6 +7301,22 @@ class MainWindow(QMainWindow):
         relation_actions_widget.setFixedHeight(28)
         relation_actions_widget.setLayout(relation_actions_row)
         outer_layout.addWidget(relation_actions_widget)
+
+        outer_layout.addSpacing(4)
+
+        separator_bottom = QFrame()
+        separator_bottom.setFrameShape(QFrame.HLine)
+        separator_bottom.setFrameShadow(QFrame.Plain)
+        separator_bottom.setStyleSheet("""
+        QFrame {
+            background-color: #7a808a;
+            border: none;
+        }
+        """)
+        separator_bottom.setFixedHeight(2)
+        separator_bottom.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+
+        outer_layout.addWidget(separator_bottom)
 
         self.workspace_dependent_actions.extend([
             btn_cover,
@@ -7344,11 +7372,11 @@ class MainWindow(QMainWindow):
         editor_column_layout.setSpacing(8)
 
         editor_title = QLabel("Contenuto")
-        editor_title.setStyleSheet("font-size: 18px; font-weight: 600;")
+        editor_title.setStyleSheet("font-size: 18px; font-weight: 600; padding-left: 10px;")
         editor_column_layout.addWidget(editor_title)
 
         self.selected_label = QLabel("Seleziona un nodo nella struttura")
-        self.selected_label.setStyleSheet("color: #666;")
+        self.selected_label.setStyleSheet("color: #666; padding-left: 10px;")
         editor_column_layout.addWidget(self.selected_label)
 
         self.block_editor = BlockEditorWidget(self)
